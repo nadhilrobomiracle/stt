@@ -4,4 +4,4 @@ python-multipart
 faster-whisper
 pydub
 static-ffmpeg
-pyaudioop
+https://github.com/jiaaro/pydub/archive/master.zip
