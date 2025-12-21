@@ -13,7 +13,7 @@ import static_ffmpeg
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("stt-api")
 
-# Auto-configure FFmpeg
+# Auto-configure FFmpeg (adds binaries to PATH)
 static_ffmpeg.add_paths()
 
 # Initialize FastAPI App
@@ -35,6 +35,7 @@ MODEL_SIZE = "tiny"
 
 logger.info(f"Loading Whisper Model ({MODEL_SIZE})...")
 try:
+    # int8 quantization for CPU speed
     model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
     logger.info("Model loaded successfully.")
 except Exception as e:
@@ -44,7 +45,11 @@ except Exception as e:
 @app.get("/")
 async def health_check():
     """Health check."""
-    return {"status": "online", "engine": f"faster-whisper ({MODEL_SIZE})", "fix": "No pydub/audioop"}
+    return {
+        "status": "online",
+        "engine": f"faster-whisper ({MODEL_SIZE})",
+        "features": ["offline", "conditional-vad", "anti-hallucination"]
+    }
 
 @app.post("/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
@@ -61,12 +66,13 @@ async def transcribe_audio(file: UploadFile = File(...)):
         with open(temp_input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
+        # Check for empty file
         if os.path.getsize(temp_input_path) < 2048:
             raise HTTPException(status_code=400, detail="Audio file too small")
 
-        # 2. Convert to 16kHz Mono WAV using native FFmpeg (Avoiding pydub crash)
-        # Using -y to overwrite, -ar 16000 for rate, -ac 1 for mono
-        command = [
+        # 2. Convert to 16kHz Mono WAV (using native FFmpeg)
+        # -y: overwrite, -ar: rate, -ac: channels
+        command_convert = [
             "ffmpeg", "-i", temp_input_path, 
             "-ar", "16000", 
             "-ac", "1", 
@@ -74,23 +80,39 @@ async def transcribe_audio(file: UploadFile = File(...)):
             wav_output_path
         ]
         
-        # Run conversion
-        result = subprocess.run(command, capture_output=True, text=True)
-        
+        result = subprocess.run(command_convert, capture_output=True, text=True)
         if result.returncode != 0:
             logger.error(f"FFmpeg Error: {result.stderr}")
             raise HTTPException(status_code=400, detail="Audio format not supported")
 
-        # 3. Transcribe
+        # 3. Get Duration (via ffprobe)
+        try:
+            command_probe = [
+                "ffprobe", "-v", "error", 
+                "-show_entries", "format=duration", 
+                "-of", "default=noprint_wrappers=1:nokey=1", 
+                wav_output_path
+            ]
+            probe = subprocess.run(command_probe, capture_output=True, text=True)
+            duration = float(probe.stdout.strip())
+        except Exception as e:
+            logger.warning(f"Could not determine duration: {e}")
+            duration = 0.0
+
+        # 4. Transcribe with Conditional VAD
+        # Disable VAD for long audio (>15s) to prevent cut-offs
+        use_vad = duration <= 15
+        
+        logger.info(f"Audio Duration: {duration:.2f}s | VAD Filter: {use_vad}")
+
         segments, info = model.transcribe(
             wav_output_path, 
             beam_size=3, 
-            vad_filter=True
+            vad_filter=use_vad
         )
         
-        logger.info(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")
-        
-        # 4. Filter and Combine
+        # 5. Filter and Combine (Anti-Hallucination)
+        # Removes segments that contain only punctuation
         text_parts = [
             segment.text.strip()
             for segment in segments
@@ -102,7 +124,8 @@ async def transcribe_audio(file: UploadFile = File(...)):
         
         return {
             "text": transcribed_text,
-            "language": info.language
+            "language": info.language,
+            "duration": round(duration, 2)
         }
 
     except HTTPException as he:
