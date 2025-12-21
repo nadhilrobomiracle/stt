@@ -4,4 +4,4 @@ faster-whisper
 pydub
 numpy
 python-multipart
-ffmpeg-python
+ffmpeg-static
