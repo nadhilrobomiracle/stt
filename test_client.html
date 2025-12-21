@@ -4,13 +4,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nexus STT Client</title>
+    <title>Nexus STT Tester</title>
     <style>
         :root {
             --primary: #6366f1;
+            --success: #22c55e;
             --bg: #0f172a;
             --surface: #1e293b;
             --text: #f8fafc;
+            --text-muted: #94a3b8;
         }
 
         body {
@@ -21,9 +23,8 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
-            overflow: hidden;
         }
 
         .container {
@@ -33,7 +34,7 @@
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
             text-align: center;
             width: 90%;
-            max-width: 500px;
+            max-width: 600px;
         }
 
         h1 {
@@ -42,22 +43,22 @@
             letter-spacing: 1px;
         }
 
+        /* Mic Button */
         #mic-btn {
-            width: 100px;
-            height: 100px;
+            width: 80px;
+            height: 80px;
             border-radius: 50%;
             background: var(--surface);
-            border: 3px solid var(--primary);
+            border: 2px solid var(--primary);
             color: var(--primary);
-            font-size: 2rem;
+            font-size: 1.5rem;
             cursor: pointer;
             transition: all 0.3s ease;
-            position: relative;
             outline: none;
             display: flex;
             align-items: center;
             justify-content: center;
-            margin: 0 auto 2rem auto;
+            margin: 0 auto 1.5rem auto;
         }
 
         #mic-btn:hover {
@@ -78,7 +79,7 @@
             }
 
             70% {
-                box-shadow: 0 0 0 20px rgba(220, 20, 60, 0);
+                box-shadow: 0 0 0 15px rgba(220, 20, 60, 0);
             }
 
             100% {
@@ -86,46 +87,74 @@
             }
         }
 
+        /* Status & Logs */
         #status {
             margin-bottom: 1rem;
             font-size: 0.9rem;
-            color: #94a3b8;
-            height: 1.2em;
+            color: var(--text-muted);
+            min-height: 1.2em;
         }
 
-        .output-box {
+        /* Results Area */
+        .result-panel {
             background: #0f172a;
             border: 1px solid #334155;
             border-radius: 10px;
-            padding: 1rem;
-            min-height: 120px;
+            padding: 1.5rem;
             text-align: left;
+            margin-bottom: 1.5rem;
+        }
+
+        .meta-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 0.5rem;
+        }
+
+        .main-text {
             font-family: monospace;
-            font-size: 1rem;
+            font-size: 1.1rem;
             color: #e2e8f0;
             white-space: pre-wrap;
-            position: relative;
+            line-height: 1.5;
+            min-height: 60px;
         }
 
-        .output-box:empty::before {
-            content: "Transcription will appear here...";
+        .main-text:empty::before {
+            content: "Transcription waiting...";
             color: #475569;
+            font-style: italic;
         }
 
+        /* Audio Preview */
+        audio {
+            width: 100%;
+            margin-top: 1rem;
+            height: 30px;
+        }
+
+        /* Settings */
         .settings {
             margin-top: 2rem;
             font-size: 0.8rem;
-            color: #64748b;
+            color: var(--text-muted);
+            border-top: 1px solid #334155;
+            padding-top: 1rem;
         }
 
         input {
             background: #0f172a;
             border: 1px solid #334155;
-            color: #94a3b8;
-            padding: 5px 10px;
+            color: var(--text-muted);
+            padding: 8px 12px;
             border-radius: 5px;
-            width: 70%;
+            width: 80%;
             text-align: center;
+            font-family: monospace;
         }
     </style>
 </head>
@@ -133,20 +162,23 @@
 <body>
 
     <div class="container">
-        <h1>Nexus Voice</h1>
+        <h1>Nexus STT Tester</h1>
 
-        <button id="mic-btn" title="Click to Speak">
-            🎤
-        </button>
+        <button id="mic-btn" title="Click to Record">🎤</button>
+        <div id="status">Ready to record</div>
 
-        <div id="status">Ready</div>
-
-        <div class="output-box" id="output"></div>
+        <div class="result-panel">
+            <div class="meta-info">
+                <span id="lang-display">Lang: -</span>
+                <span id="dur-display">Time: 0.00s</span>
+            </div>
+            <div class="main-text" id="output"></div>
+            <audio id="audio-preview" controls style="display:none;"></audio>
+        </div>
 
         <div class="settings">
-            <label>API URL:</label>
-            <!-- Change this to your Render URL in production -->
-            <input type="text" id="api-url" value="http://localhost:5000/transcribe">
+            <label>Backend URL:</label><br>
+            <input type="text" id="api-url" value="https://stt-uxv0.onrender.com/transcribe">
         </div>
     </div>
 
@@ -154,76 +186,113 @@
         const btn = document.getElementById('mic-btn');
         const status = document.getElementById('status');
         const output = document.getElementById('output');
+        const langDisplay = document.getElementById('lang-display');
+        const durDisplay = document.getElementById('dur-display');
+        const audioPreview = document.getElementById('audio-preview');
         const apiInput = document.getElementById('api-url');
 
         let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
+        let startTime = 0;
 
         btn.addEventListener('click', async () => {
             if (!isRecording) {
-                // START RECORDING
+                // --- START RECORDING ---
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                    // Prefer mp4/aac or webm/opus depending on browser support
+                    let mimeType = 'audio/webm';
+                    if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+                        mimeType = 'audio/webm;codecs=opus';
+                    } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+                        mimeType = 'audio/mp4';
+                    }
+
+                    mediaRecorder = new MediaRecorder(stream, { mimeType });
 
                     mediaRecorder.ondataavailable = (event) => {
-                        audioChunks.push(event.data);
+                        if (event.data.size > 0) audioChunks.push(event.data);
                     };
 
                     mediaRecorder.onstop = async () => {
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-                        audioChunks = []; // Reset chunks
+                        const audioBlob = new Blob(audioChunks, { type: mimeType });
 
-                        // Send to backend
+                        // Setup Audio Preview
+                        const audioUrl = URL.createObjectURL(audioBlob);
+                        audioPreview.src = audioUrl;
+                        audioPreview.style.display = 'block';
+
+                        // Upload
                         await sendToBackend(audioBlob);
+
+                        // Cleanup
+                        audioChunks = [];
+                        stream.getTracks().forEach(track => track.stop());
                     };
 
                     mediaRecorder.start();
                     isRecording = true;
+                    startTime = Date.now();
+
                     btn.classList.add('recording');
-                    status.textContent = "Listening... Click to stop.";
+                    btn.textContent = "⬛"; // Stop icon
+                    status.textContent = "Recording... (Speak now)";
                     output.textContent = "";
+                    langDisplay.textContent = "Lang: -";
+                    durDisplay.textContent = "Time: ...";
+                    audioPreview.style.display = 'none';
 
                 } catch (err) {
                     console.error("Mic Error:", err);
-                    status.textContent = "Microphone access denied.";
+                    status.textContent = "Error: Could not access microphone.";
                 }
             } else {
-                // STOP RECORDING
+                // --- STOP RECORDING ---
                 mediaRecorder.stop();
                 isRecording = false;
                 btn.classList.remove('recording');
+                btn.textContent = "🎤";
                 status.textContent = "Processing...";
-
-                // Stop all tracks to release mic
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
             }
         });
 
         async function sendToBackend(blob) {
             const formData = new FormData();
-            formData.append("file", blob, "recording.webm");
+            // Filename helps the backend guess extension if MIME type is messy
+            const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
+            formData.append("file", blob, `recording.${ext}`);
 
             try {
                 const url = apiInput.value;
+                const uploadStart = Date.now();
+
                 const response = await fetch(url, {
                     method: "POST",
                     body: formData
                 });
 
                 if (!response.ok) {
-                    throw new Error(`Server Error: ${response.status}`);
+                    const errText = await response.text();
+                    throw new Error(`Server ${response.status}: ${errText}`);
                 }
 
                 const data = await response.json();
+                const totalTime = ((Date.now() - uploadStart) / 1000).toFixed(2);
+
+                // Update UI with results
                 output.textContent = data.text || "(No speech detected)";
-                status.textContent = "Done.";
+                langDisplay.textContent = `Lang: ${data.language || '?'}`;
+                durDisplay.textContent = `Audio: ${data.duration}s | API: ${totalTime}s`;
+
+                status.textContent = "Transcription complete.";
+                status.style.color = "#22c55e"; // Green
 
             } catch (err) {
                 console.error("Upload Error:", err);
                 output.textContent = "Error: " + err.message;
-                status.textContent = "Connection failed.";
+                status.textContent = "Failed to transcribe.";
+                status.style.color = "#ef4444"; // Red
             }
         }
     </script>

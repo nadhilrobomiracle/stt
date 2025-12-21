@@ -85,34 +85,19 @@ async def transcribe_audio(file: UploadFile = File(...)):
             logger.error(f"FFmpeg Error: {result.stderr}")
             raise HTTPException(status_code=400, detail="Audio format not supported")
 
-        # 3. Get Duration (via ffprobe)
-        try:
-            command_probe = [
-                "ffprobe", "-v", "error", 
-                "-show_entries", "format=duration", 
-                "-of", "default=noprint_wrappers=1:nokey=1", 
-                wav_output_path
-            ]
-            probe = subprocess.run(command_probe, capture_output=True, text=True)
-            duration = float(probe.stdout.strip())
-        except Exception as e:
-            logger.warning(f"Could not determine duration: {e}")
-            duration = 0.0
-
-        # 4. Transcribe with Conditional VAD
-        # Disable VAD for long audio (>15s) to prevent cut-offs
-        use_vad = duration <= 15
+        # 3. Transcribe (Optimized for Speed)
+        # - beam_size=1: Greedy search (Fastest)
+        # - language="en": Force English (Skip detection)
+        # - vad_filter=False: Skip VAD overhead (safe since we handle silence via text cleanup)
         
-        logger.info(f"Audio Duration: {duration:.2f}s | VAD Filter: {use_vad}")
-
         segments, info = model.transcribe(
             wav_output_path, 
-            beam_size=3, 
-            vad_filter=use_vad
+            beam_size=1, 
+            vad_filter=False,
+            language="en"
         )
         
-        # 5. Filter and Combine (Anti-Hallucination)
-        # Removes segments that contain only punctuation
+        # 4. Filter and Combine (Anti-Hallucination)
         text_parts = [
             segment.text.strip()
             for segment in segments
@@ -120,12 +105,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
         ]
         transcribed_text = " ".join(text_parts)
         
-        logger.info(f"Transcription: '{transcribed_text}'")
-        
         return {
             "text": transcribed_text,
-            "language": info.language,
-            "duration": round(duration, 2)
+            "language": "en"
         }
 
     except HTTPException as he:
