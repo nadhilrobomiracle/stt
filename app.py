@@ -1,121 +1,99 @@
 import os
-import logging
-import time
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import google.generativeai as genai
-from dotenv import load_dotenv
+import shutil
+import uuid
+import speech_recognition as sr
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydub import AudioSegment
+import uvicorn
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Initialize FastAPI App
+app = FastAPI(title="High-Performance Live STT API")
 
-# Load environment variables
-# Try to load from local .env context if available (development)
-load_dotenv()
+# Configure CORS (Allow all origins for direct access)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Initialize Flask App
-app = Flask(__name__)
-# Enable CORS for all domains, allowing the API to be called from any frontend
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+# Ensure temp directory exists
+TEMP_DIR = "temp_audio"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-# Configure Gemini
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+@app.get("/")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "online", "engine": "Google Web Speech API"}
 
-if not GEMINI_API_KEY:
-    logger.warning("GEMINI_API_KEY is not set. STT endpoints will fail.")
-else:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # Using Gemini 1.5 Flash for speed and multimodal capabilities
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        logger.info("Gemini 1.5 Flash model initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Gemini model: {e}")
-
-def clean_mime_type(mime_type):
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
     """
-    Cleans the mime type to ensure it's compatible with Gemini.
-    Browsers often send 'audio/webm;codecs=opus', but we just want 'audio/webm'.
+    Transcribe audio file to text.
+    Accepts: webm, wav, mp3, m4a
+    Returns: { "text": "transcribed text" }
     """
-    if not mime_type:
-        return "audio/mp3" # Fallback
-    return mime_type.split(';')[0].strip()
-
-@app.route('/', methods=['GET'])
-def health_check():
-    """Simple health check endpoint."""
-    return jsonify({
-        "status": "online",
-        "service": "Nexus STT Backend",
-        "model": "gemini-1.5-flash"
-    })
-
-@app.route('/transcribe', methods=['POST'])
-def transcribe_audio():
-    """
-    Endpoint to convert voice/audio to text.
-    Expects a multipart/form-data POST with a 'file' field containing the audio.
-    """
-    start_time = time.time()
     
-    if not GEMINI_API_KEY:
-        return jsonify({"error": "Server configuration error: API Key missing"}), 500
-
-    if 'file' not in request.files:
-        logger.warning("No file part in request")
-        return jsonify({"error": "No file uploaded. Please send a file with key 'file'."}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
+    # Generate unique filenames
+    file_id = str(uuid.uuid4())
+    # Default to webm if no extension provided (common for Blob uploads)
+    input_ext = file.filename.split(".")[-1] if "." in file.filename else "webm"
+    temp_input_path = os.path.join(TEMP_DIR, f"{file_id}.{input_ext}")
+    wav_output_path = os.path.join(TEMP_DIR, f"{file_id}.wav")
 
     try:
-        # Read file content into memory
-        audio_data = file.read()
-        
-        # Determine strict mime type
-        user_mime = file.mimetype or "audio/webm"
-        clean_mime = clean_mime_type(user_mime)
-        
-        logger.info(f"Processing audio: {len(audio_data)} bytes, MIME: {clean_mime}")
-        
-        # Prompt for the model
-        prompt = (
-            "Transcribe the spoken audio in this file into text. "
-            "Output ONLY the transcription. "
-            "If the audio is silent or unintelligible, output nothing."
-        )
-        
-        # Call Gemini API with inline data
-        response = model.generate_content([
-            prompt,
-            {
-                "mime_type": clean_mime,
-                "data": audio_data
-            }
-        ])
-        
-        transcribed_text = response.text.strip()
-        processing_time = time.time() - start_time
-        
-        logger.info(f"Transcription complete in {processing_time:.2f}s: '{transcribed_text}'")
-        
-        return jsonify({
-            "text": transcribed_text,
-            "processing_time_seconds": round(processing_time, 3)
-        })
+        # Save uploaded file to disk
+        with open(temp_input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
+        # Convert audio to 16kHz Mono WAV (Standard for Speech Recognition)
+        # This normalization greatly improves accuracy and speed
+        try:
+            audio = AudioSegment.from_file(temp_input_path)
+            audio = audio.set_frame_rate(16000).set_channels(1)
+            audio.export(wav_output_path, format="wav")
+        except Exception as e:
+            # Likely missing ffmpeg or corrupt audio
+            print(f"Audio Conversion Error: {e}")
+            raise HTTPException(status_code=400, detail="Invalid audio format or codec missing")
+
+        # Perform Speech Recognition
+        recognizer = sr.Recognizer()
+        
+        # Load the processed WAV file
+        with sr.AudioFile(wav_output_path) as source:
+            audio_data = recognizer.record(source)
+
+        try:
+            # Use Google Web Speech API (Fast, reliable, free tier)
+            text = recognizer.recognize_google(audio_data)
+            return {"text": text}
+            
+        except sr.UnknownValueError:
+            # Audio was silent or unintelligible
+            return {"text": ""}
+            
+        except sr.RequestError:
+            # Connection to Google API failed
+            raise HTTPException(status_code=503, detail="Speech service unavailable")
+
+    except HTTPException as http_e:
+        raise http_e
     except Exception as e:
-        logger.error(f"Transcription failed: {e}")
-        # Improve error messages for common issues
-        error_msg = str(e)
-        if "400" in error_msg:
-             return jsonify({"error": "Invalid audio format or corrupted file."}), 400
-        return jsonify({"error": "Failed to process audio", "details": error_msg}), 500
+        print(f"Server Error: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+        
+    finally:
+        # Cleanup temporary files
+        if os.path.exists(temp_input_path):
+            os.remove(temp_input_path)
+        if os.path.exists(wav_output_path):
+            os.remove(wav_output_path)
 
-if __name__ == '__main__':
-    # Run slightly differently in dev
+if __name__ == "__main__":
+    # Ready to run using: python main.py
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Use uvicorn programmatically
+    uvicorn.run(app, host="0.0.0.0", port=port)
