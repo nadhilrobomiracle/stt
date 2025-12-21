@@ -4,20 +4,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nexus Streaming PCM STT</title>
+    <title>Nexus Simple STT</title>
     <style>
-        :root {
-            --primary: #6366f1;
-            --success: #22c55e;
-            --bg: #0f172a;
-            --surface: #1e293b;
-            --text: #f8fafc;
-        }
-
         body {
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background-color: var(--bg);
-            color: var(--text);
+            font-family: system-ui, sans-serif;
+            background: #0f172a;
+            color: white;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -26,205 +18,134 @@
             margin: 0;
         }
 
-        .container {
-            background: var(--surface);
-            padding: 2rem;
-            border-radius: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            text-align: center;
-            width: 90%;
-            max-width: 600px;
-        }
-
-        h1 {
-            margin-bottom: 2rem;
-        }
-
-        #mic-btn {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            background: var(--surface);
-            border: 2px solid var(--primary);
-            color: var(--primary);
-            font-size: 1.5rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            outline: none;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 1.5rem auto;
-        }
-
-        #mic-btn.recording {
-            background: crimson;
-            border-color: crimson;
+        button {
+            background: #6366f1;
             color: white;
-            animation: pulse 1s infinite;
+            border: none;
+            padding: 20px 40px;
+            font-size: 1.5rem;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+        }
+
+        button.recording {
+            background: crimson;
+            animation: pulse 1.5s infinite;
         }
 
         @keyframes pulse {
             0% {
-                transform: scale(1);
+                opacity: 1;
             }
 
             50% {
-                transform: scale(1.1);
+                opacity: 0.7;
             }
 
             100% {
-                transform: scale(1);
+                opacity: 1;
             }
         }
 
-        .result-panel {
-            background: #0f172a;
-            border: 1px solid #334155;
+        #out {
+            margin-top: 2rem;
+            font-size: 1.2rem;
+            font-family: monospace;
+            background: #1e293b;
+            padding: 1rem;
             border-radius: 10px;
-            padding: 1.5rem;
-            text-align: left;
-            margin-bottom: 1.5rem;
-            min-height: 100px;
-        }
-
-        #final-text {
-            color: #e2e8f0;
-            font-size: 1.1rem;
+            min-width: 300px;
+            text-align: center;
+            min-height: 1.5em;
         }
 
         .settings {
-            margin-top: 1rem;
-            color: #64748b;
-            font-size: 0.8rem;
+            margin-top: 2rem;
+            color: #94a3b8;
+            font-size: 0.9rem;
         }
 
         input {
-            background: #0f172a;
-            color: #cbd5e1;
+            background: #1e293b;
+            color: white;
             border: 1px solid #334155;
             padding: 5px;
-            width: 60%;
-            text-align: center;
         }
     </style>
 </head>
 
 <body>
 
-    <div class="container">
-        <h1>Nexus Streaming PCM</h1>
+    <button id="record-btn" onclick="toggleRecord()">🎤 Record (Hold)</button>
+    <div id="out">...</div>
 
-        <button id="mic-btn" title="Click to Record">🎤</button>
-        <div id="status">Ready</div>
-
-        <div class="result-panel">
-            <span id="final-text"></span>
-        </div>
-
-        <div class="settings">
-            <label>WebSocket URL:</label><br>
-            <input type="text" id="ws-url" value="wss://stt-uxv0.onrender.com/ws/transcribe">
-        </div>
+    <div class="settings">
+        API URL: <input id="api-url" value="https://stt-uxv0.onrender.com/stt">
     </div>
 
     <script>
-        const btn = document.getElementById('mic-btn');
-        const status = document.getElementById('status');
-        const finalTextElem = document.getElementById('final-text');
-        const wsInput = document.getElementById('ws-url');
-
-        let socket;
-        let audioCtx;
-        let processor;
-        let source;
+        let mediaRecorder;
+        let chunks = [];
         let isRecording = false;
+        const btn = document.getElementById('record-btn');
+        const out = document.getElementById('out');
+        const apiUrl = document.getElementById('api-url');
 
-        btn.addEventListener('click', () => {
+        async function toggleRecord() {
             if (!isRecording) {
-                startRecording();
-            } else {
-                stopRecording();
-            }
-        });
-
-        async function startRecording() {
-            try {
-                // Connect WebSocket
-                const wsUrl = wsInput.value;
-                socket = new WebSocket(wsUrl);
-
-                socket.onopen = async () => {
-                    status.textContent = "Connected. Speak now...";
-                    status.style.color = "#22c55e";
-
-                    // Audio Context (Force 16kHz sample rate)
-                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-
+                // START
+                try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    source = audioCtx.createMediaStreamSource(stream);
+                    mediaRecorder = new MediaRecorder(stream);
 
-                    // Usage of ScriptProcessorNode (deprecated but widely supported & simplest for raw PCM)
-                    // bufferSize 4096 = ~250ms chunks at 16kHz
-                    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+                    mediaRecorder.ondataavailable = e => chunks.push(e.data);
 
-                    processor.onaudioprocess = (e) => {
-                        if (socket.readyState === WebSocket.OPEN) {
-                            const inputData = e.inputBuffer.getChannelData(0);
-                            // Convert Float32 to Int16
-                            const pcm16 = new Int16Array(inputData.length);
-                            for (let i = 0; i < inputData.length; i++) {
-                                // Clamp to [-1, 1] then convert to 16-bit PCM
-                                let s = Math.max(-1, Math.min(1, inputData[i]));
-                                pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                            }
-                            socket.send(pcm16.buffer);
+                    mediaRecorder.onstop = async () => {
+                        btn.disabled = true;
+                        btn.textContent = "⏳ Processing...";
+
+                        const blob = new Blob(chunks, { type: "audio/wav" }); // or webm, backend handles both
+                        chunks = [];
+
+                        const fd = new FormData();
+                        fd.append("file", blob, "audio.wav");
+
+                        try {
+                            const res = await fetch(apiUrl.value, {
+                                method: "POST",
+                                body: fd
+                            });
+                            const data = await res.json();
+                            out.innerText = data.text || "(No speech detected)";
+                        } catch (err) {
+                            out.innerText = "Error: " + err.message;
                         }
+
+                        btn.disabled = false;
+                        btn.textContent = "🎤 Record (Hold)";
+                        btn.classList.remove('recording');
                     };
 
-                    source.connect(processor);
-                    processor.connect(audioCtx.destination);
-
+                    mediaRecorder.start();
                     isRecording = true;
+                    btn.textContent = "🛑 Stop";
                     btn.classList.add('recording');
-                    btn.textContent = "⬛";
-                    finalTextElem.textContent = "";
-                };
-
-                socket.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    if (data.text) {
-                        finalTextElem.textContent += data.text + " ";
-                    }
-                };
-
-                socket.onerror = (error) => {
-                    console.error("WebSocket Error:", error);
-                    status.textContent = "Connection Error";
-                    stopRecording();
-                };
-
-                socket.onclose = () => {
-                    if (isRecording) stopRecording();
-                };
-
-            } catch (err) {
-                console.error("Error:", err);
-                status.textContent = "Mic Access Denied";
+                    out.innerText = "Listening...";
+                } catch (err) {
+                    console.error(err);
+                    alert("Mic permission denied");
+                }
+            } else {
+                // STOP
+                isRecording = false;
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
             }
-        }
-
-        function stopRecording() {
-            isRecording = false;
-            btn.classList.remove('recording');
-            btn.textContent = "🎤";
-            status.textContent = "Disconnected";
-            status.style.color = "#94a3b8";
-
-            if (socket) socket.close();
-            if (processor) processor.disconnect();
-            if (source) source.disconnect();
-            if (audioCtx) audioCtx.close();
         }
     </script>
 </body>
