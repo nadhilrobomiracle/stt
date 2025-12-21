@@ -1,6 +1,6 @@
-flask
-flask-cors
-python-dotenv
-google-generativeai
+fastapi
+uvicorn
 gunicorn
-werkzeug
+speechrecognition
+pydub
+python-multipart
