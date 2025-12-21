@@ -1,7 +1,6 @@
-fastapi
-uvicorn[standard]
-faster-whisper
-pydub
-numpy
-python-multipart
-ffmpeg-static
+flask
+flask-cors
+python-dotenv
+google-generativeai
+gunicorn
+werkzeug
