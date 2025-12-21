@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-python-multipart
 faster-whisper
 pydub
 numpy
+python-multipart
+ffmpeg-python
