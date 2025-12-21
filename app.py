@@ -1,99 +1,120 @@
 import os
-import shutil
+import logging
 import uuid
 import speech_recognition as sr
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from pydub import AudioSegment
-import uvicorn
+from dotenv import load_dotenv
 
-# Initialize FastAPI App
-app = FastAPI(title="High-Performance Live STT API")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Configure CORS (Allow all origins for direct access)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Load environment variables
+load_dotenv()
 
-# Ensure temp directory exists
-TEMP_DIR = "temp_audio"
+# Initialize Flask App
+app = Flask(__name__)
+# Enable CORS so any frontend can call this API
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Directory for temporary audio storage
+TEMP_DIR = "/tmp" if os.path.exists("/tmp") else "temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-@app.get("/")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "online", "engine": "Google Web Speech API"}
+@app.route('/', methods=['GET'])
+def health_check():
+    """Simple health check."""
+    return jsonify({
+        "status": "online", 
+        "service": "Nexus STT (Google Speech API)",
+        "info": "No AI/LLM used. Pure Voice-to-Text."
+    })
 
-@app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
+@app.route('/transcribe', methods=['POST'])
+def transcribe_audio():
     """
-    Transcribe audio file to text.
-    Accepts: webm, wav, mp3, m4a
-    Returns: { "text": "transcribed text" }
+    Endpoint to convert voice to text using SpeechRecognition (Google Web Speech API).
+    Input: Multipart form-data with 'file'.
+    Output: JSON { "text": "transcribed text" }
     """
+    temp_filename = None
+    wav_filename = None
     
-    # Generate unique filenames
-    file_id = str(uuid.uuid4())
-    # Default to webm if no extension provided (common for Blob uploads)
-    input_ext = file.filename.split(".")[-1] if "." in file.filename else "webm"
-    temp_input_path = os.path.join(TEMP_DIR, f"{file_id}.{input_ext}")
-    wav_output_path = os.path.join(TEMP_DIR, f"{file_id}.wav")
-
     try:
-        # Save uploaded file to disk
-        with open(temp_input_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Validate request
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part in request"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
 
-        # Convert audio to 16kHz Mono WAV (Standard for Speech Recognition)
-        # This normalization greatly improves accuracy and speed
+        # Generate unique filenames
+        unique_id = str(uuid.uuid4())
+        # Try to guess extension or default to .webm (common from browsers)
+        ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else 'webm'
+        
+        temp_filename = os.path.join(TEMP_DIR, f"{unique_id}.{ext}")
+        wav_filename = os.path.join(TEMP_DIR, f"{unique_id}.wav")
+        
+        # Save uploaded file
+        file.save(temp_filename)
+        
+        # Convert to WAV (Required for SpeechRecognition)
         try:
-            audio = AudioSegment.from_file(temp_input_path)
-            audio = audio.set_frame_rate(16000).set_channels(1)
-            audio.export(wav_output_path, format="wav")
+            # Pydub handles various formats (webm, mp3, etc) given ffmpeg is installed
+            sound = AudioSegment.from_file(temp_filename)
+            sound.export(wav_filename, format="wav")
         except Exception as e:
-            # Likely missing ffmpeg or corrupt audio
-            print(f"Audio Conversion Error: {e}")
-            raise HTTPException(status_code=400, detail="Invalid audio format or codec missing")
-
+            logger.error(f"Audio conversion failed: {e}")
+            return jsonify({
+                "error": "Failed to process audio format.",
+                "details": "Ensure ffmpeg is installed on the server."
+            }), 500
+            
         # Perform Speech Recognition
         recognizer = sr.Recognizer()
         
-        # Load the processed WAV file
-        with sr.AudioFile(wav_output_path) as source:
-            audio_data = recognizer.record(source)
-
         try:
-            # Use Google Web Speech API (Fast, reliable, free tier)
-            text = recognizer.recognize_google(audio_data)
-            return {"text": text}
-            
+            with sr.AudioFile(wav_filename) as source:
+                # Read the audio file
+                audio_data = recognizer.record(source)
+                
+                # Use Google Web Speech API (Free, no key required for low volume)
+                text = recognizer.recognize_google(audio_data)
+                
+                logger.info(f"Transcription successful: '{text}'")
+                return jsonify({"text": text})
+                
         except sr.UnknownValueError:
-            # Audio was silent or unintelligible
-            return {"text": ""}
-            
-        except sr.RequestError:
-            # Connection to Google API failed
-            raise HTTPException(status_code=503, detail="Speech service unavailable")
+            # Audio was not understood
+            logger.info("Audio not understood (silence or unclear)")
+            return jsonify({"text": ""})
+        except sr.RequestError as e:
+            # API was unreachable
+            logger.error(f"Google Speech API error: {e}")
+            return jsonify({"error": "Speech recognition service unavailable"}), 503
 
-    except HTTPException as http_e:
-        raise http_e
     except Exception as e:
-        print(f"Server Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        logger.error(f"Unexpected error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
         
     finally:
         # Cleanup temporary files
-        if os.path.exists(temp_input_path):
-            os.remove(temp_input_path)
-        if os.path.exists(wav_output_path):
-            os.remove(wav_output_path)
+        if temp_filename and os.path.exists(temp_filename):
+            try:
+                os.remove(temp_filename)
+            except:
+                pass
+        if wav_filename and os.path.exists(wav_filename):
+            try:
+                os.remove(wav_filename)
+            except:
+                pass
 
-if __name__ == "__main__":
-    # Ready to run using: python main.py
+if __name__ == '__main__':
+    # Run locally
     port = int(os.environ.get("PORT", 5000))
-    # Use uvicorn programmatically
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)

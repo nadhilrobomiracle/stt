@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-gunicorn
-speechrecognition
-pydub
 python-multipart
+SpeechRecognition
+pydub
