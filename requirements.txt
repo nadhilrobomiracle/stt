@@ -3,7 +3,7 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 
 faster-whisper==1.0.3
-ctranslate2==4.2.1
+ctranslate2==4.6.2
 static-ffmpeg==2.7
 
 numpy==1.26.4
