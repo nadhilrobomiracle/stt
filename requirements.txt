@@ -1,6 +1,6 @@
 fastapi
-uvicorn[standard]
-python-multipart 
-SpeechRecognition
-static-ffmpeg
+uvicorn
+python-multipart
+speechrecognition
 pydub
+static-ffmpeg
